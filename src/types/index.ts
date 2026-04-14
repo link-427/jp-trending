@@ -5,7 +5,7 @@ export type Platform = "x" | "yahoo" | "tiktok" | "instagram";
 export type HeatTag = "爆" | "热" | "新";
 
 // 分类类型
-export type Category = "政治" | "娱乐" | "动漫" | "体育" | "社会" | "科技" | "生活";
+export type Category = "娱乐" | "动漫" | "时尚" | "社会" | "科技" | "生活" | "萌宠";
 
 // 热点主表
 export interface TrendingTopic {

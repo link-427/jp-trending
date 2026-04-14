@@ -5,10 +5,10 @@ import { PlatformFetcher, RawPost } from "./types";
 // 但趋势本身是按热度排好序的，所以按排名赋予合理的讨论量
 export const xFetcher: PlatformFetcher = {
   name: "X (Twitter)",
-  isConfigured: () => !!process.env.TIKTOK_API_KEY,
+  isConfigured: () => !!process.env.X_API_KEY,
   fetch: async (): Promise<RawPost[]> => {
-    const apiKey = process.env.TIKTOK_API_KEY;
-    if (!apiKey) { console.log("X: 未配置 API Key"); return []; }
+    const apiKey = process.env.X_API_KEY;
+    if (!apiKey) { console.log("X: 未配置 X_API_KEY"); return []; }
 
     const host = "twitter241.p.rapidapi.com";
     const url = "https://" + host + "/trends-by-location?woeid=23424856";

@@ -10,11 +10,12 @@ const MODELS = [
 ];
 
 const CATEGORIES: Category[] = [
-  "政治", "娱乐", "动漫", "体育", "社会", "科技", "生活",
+  "娱乐", "动漫", "时尚", "社会", "科技", "生活", "萌宠",
 ];
 
 export interface IdentifiedTopic {
   titleZh: string;
+  titleJa: string;
   category: Category;
   summaryZh: string;
   postIndices: number[];
@@ -22,6 +23,7 @@ export interface IdentifiedTopic {
 
 export interface ProcessedTopic {
   titleZh: string;
+  titleJa: string;
   category: Category;
   summaryZh: string;
   sources: string[];
@@ -226,11 +228,12 @@ async function analyzeOneBatch(
     "帖子列表：\n" + postList + "\n\n" +
     "请返回 JSON 数组，每个话题包含：\n" +
     "1. title_zh: 中文标题（简洁，10-20字，概括话题核心内容）\n" +
-    "2. category: 分类，从以下选一个：政治、娱乐、动漫、体育、社会、科技、生活\n" +
-    "3. summary_zh: 中文摘要（1-2句话）\n" +
-    "4. post_indices: 属于这个话题的帖子编号数组\n\n" +
+    "2. title_ja: 日文标题（对应的日文原文标题）\n" +
+    "3. category: 分类，从以下选一个：娱乐、动漫、时尚、社会、科技、生活、萌宠\n" +
+    "4. summary_zh: 中文摘要（1-2句话）\n" +
+    "5. post_indices: 属于这个话题的帖子编号数组\n\n" +
     "严格返回 JSON，不要添加其他文字或 markdown：\n" +
-    "[{\"title_zh\":\"...\",\"category\":\"...\",\"summary_zh\":\"...\",\"post_indices\":[1,2]}]";
+    "[{\"title_zh\":\"...\",\"title_ja\":\"...\",\"category\":\"...\",\"summary_zh\":\"...\",\"post_indices\":[1,2]}]";
 
   try {
     const timeLeft = deadline ? Math.max(deadline - Date.now() - 8000, 5000) : 20000;
@@ -252,11 +255,12 @@ async function analyzeOneBatch(
       return { topics: [], quotaError: false };
     }
     const parsed = JSON.parse(jsonMatch[0]) as Array<{
-      title_zh: string; category: string; summary_zh: string; post_indices: number[];
+      title_zh: string; title_ja?: string; category: string; summary_zh: string; post_indices: number[];
     }>;
 
     const topics: IdentifiedTopic[] = parsed.map((t) => ({
       titleZh: t.title_zh || "未知话题",
+      titleJa: t.title_ja || "",
       category: CATEGORIES.includes(t.category as Category)
         ? (t.category as Category) : "社会",
       summaryZh: t.summary_zh || "",
@@ -293,8 +297,15 @@ function buildTopicsWithEngagement(
     }
     if (heatScore === 0) heatScore = 1000;
 
+    // 日文标题：优先用 AI 输出的，没有则从关联帖子的原文中提取
+    let titleJa = topic.titleJa;
+    if (!titleJa && relatedPosts.length > 0) {
+      titleJa = relatedPosts[0].content.slice(0, 50);
+    }
+
     return {
       titleZh: topic.titleZh,
+      titleJa: titleJa || topic.titleZh,
       category: topic.category,
       summaryZh: topic.summaryZh,
       sources: Array.from(sourceSet),
@@ -358,9 +369,11 @@ function basicGroupPosts(posts: RawPost[]): ProcessedTopic[] {
     }
     if (heatScore === 0) heatScore = 1000;
     const title = groupPosts[0].contentZh || groupPosts[0].content.slice(0, 30);
+    const titleJa = groupPosts[0].content.slice(0, 50);
     const category = guessCategory(groupPosts.map(p => p.content).join(" "));
     return {
       titleZh: title,
+      titleJa,
       category: category as Category,
       summaryZh: groupPosts[0].contentZh || "来自" + Array.from(sourceSet).join("、") + "的热门话题",
       sources: Array.from(sourceSet),
@@ -371,11 +384,11 @@ function basicGroupPosts(posts: RawPost[]): ProcessedTopic[] {
 }
 
 function guessCategory(text: string): string {
-  if (/サッカー|野球|テニス|大谷|WBC|オリンピック|選手|試合|優勝|プロ野球|甲子園|相撲|NBA|MLB|スポーツ|Jリーグ|ゴール|ワールドカップ|W杯|五輪|マラソン|競馬|ダービー|陸上|水泳|バスケ|バレー|ラグビー|ボクシング|格闘|レスリング/i.test(text)) return "体育";
+  if (/猫|犬|ペット|柴犬|トイプードル|ハムスター|うさぎ|子猫|子犬|保護猫|保護犬|にゃん|わんこ|もふもふ|肉球|動物園|水族館|かわいい動物/i.test(text)) return "萌宠";
+  if (/ファッション|コーデ|ブランド|ZARA|UNIQLO|GU|着こなし|コスメ|メイク|美容|スキンケア|ネイル|ヘアスタイル|おしゃれ|モデル|VOGUE|トレンドコーデ|春コーデ|夏コーデ|秋コーデ|冬コーデ|アクセサリー|ジュエリー|香水|パリコレ|ランウェイ/i.test(text)) return "时尚";
   if (/アニメ|漫画|ゲーム|声優|鬼滅|ワンピース|呪術|ポケモン|ゼルダ|ジャンプ|vtuber|にじさんじ|ホロライブ|原神|コミケ|同人|コスプレ|推し|ガンダム|ドラゴンボール|進撃|チェンソー|スパイファミリー|フリーレン|薬屋|ブルーロック|ダンジョン|異世界|転生|配信|ゲーマー|eスポーツ/i.test(text)) return "动漫";
   if (/ドラマ|映画|音楽|ライブ|アイドル|紅白|ジャニーズ|乃木坂|芸能|バラエティ|Netflix|YOASOBI|Ado|BTSキンプリ|Snow Man|SixTONES|なにわ男子|King|藤井|テレビ|NHK|フジ|日テレ|TBS|出演|歌|ダンス|MV|MVA|舞台|俳優|女優|主演|ドキュメンタリー|バンド|フェス|コンサート/i.test(text)) return "娱乐";
-  if (/選挙|政府|首相|国会|法案|外交|自民党|政治|内閣|大臣|トランプ|バイデン|関税|岸田|石破|立憲|維新|共産|与党|野党|議員|投票|支持率|改憲|防衛|安保|NATO|サミット|条約|制裁|外務/i.test(text)) return "政治";
   if (/iPhone|Apple|Google|AI|ChatGPT|スマホ|テクノロジー|ロボット|宇宙|半導体|EV|Tesla|テスラ|アプリ|SNS|プログラミング|開発|量子|NVIDIA|GPU|5G|6G|クラウド|セキュリティ|サイバー|ブロックチェーン|仮想通貨|ビットコイン|API|データ/i.test(text)) return "科技";
-  if (/桜|ラーメン|グルメ|旅行|天気|台風|花粉|ファッション|温泉|カフェ|コンビニ|料理|クリスマス|お花見|紅葉|雪|猫|犬|ペット|レシピ|スイーツ|ケーキ|寿司|焼肉|居酒屋|ホテル|観光|祭り|花火|梅雨|夏|冬|春|秋|ショッピング|セール|コスメ|美容|健康|ダイエット|ヨガ|写真|カメラ|風景/i.test(text)) return "生活";
+  if (/桜|ラーメン|グルメ|旅行|天気|台風|花粉|温泉|カフェ|コンビニ|料理|クリスマス|お花見|紅葉|雪|レシピ|スイーツ|ケーキ|寿司|焼肉|居酒屋|ホテル|観光|祭り|花火|梅雨|夏|冬|春|秋|ショッピング|セール|健康|ダイエット|ヨガ|写真|カメラ|風景/i.test(text)) return "生活";
   return "社会";
 }

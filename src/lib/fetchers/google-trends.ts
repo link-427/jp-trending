@@ -1,6 +1,8 @@
 import { PlatformFetcher, RawPost } from "./types";
 
 // Google Trends 日本区热搜（RSS 免费、无需 API Key）
+// 注意：platform 设为 "yahoo" 是因为 PRD 只定义了 4 个平台
+// Google Trends 作为 Yahoo 搜索热词的补充数据源
 export const googleTrendsFetcher: PlatformFetcher = {
   name: "Google Trends (Japan)",
   isConfigured: () => true,

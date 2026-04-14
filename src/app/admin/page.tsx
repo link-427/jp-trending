@@ -11,7 +11,7 @@ export default function AdminPage() {
     setLoading(true);
     setResult(null);
     try {
-      const res = await fetch("/api/cron/fetch-trends", { method: "POST" });
+      const res = await fetch("/api/refresh-trending", { method: "POST" });
       const text = await res.text();
       try {
         const data = JSON.parse(text);

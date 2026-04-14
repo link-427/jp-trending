@@ -2,7 +2,7 @@
 
 import type { Category } from "@/types";
 
-const categories: Category[] = ["政治", "娱乐", "动漫", "体育", "社会", "科技", "生活"];
+const categories: Category[] = ["娱乐", "动漫", "时尚", "社会", "科技", "生活", "萌宠"];
 const allTabs = ["总榜", ...categories];
 
 export default function CategoryTabs({

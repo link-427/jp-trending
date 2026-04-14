@@ -103,6 +103,7 @@ function getHeatTag(rank: number): HeatTag {
 async function saveToDatabase(
   items: Array<{
     titleZh: string;
+    titleJa: string;
     category: string;
     summaryZh: string;
     sources: string[];
@@ -116,11 +117,9 @@ async function saveToDatabase(
   await supabase.from("topic_posts").delete().neq("id", 0);
   await supabase.from("trending_topics").delete().neq("id", 0);
 
-  const batchSize = 20;
-  for (let i = 0; i < items.length; i += batchSize) {
-    const batch = items.slice(i, i + batchSize);
-    const topicRows = batch.map((item) => ({
-      title_ja: item.titleZh,
+  for (const item of items) {
+    const topicRow = {
+      title_ja: item.titleJa,
       title_zh: item.titleZh,
       category: item.category,
       heat_score: item.heatScore,
@@ -129,61 +128,58 @@ async function saveToDatabase(
       summary_zh: item.summaryZh,
       rank_overall: item.rankOverall,
       rank_category: item.rankCategory,
-    }));
+    };
 
     const { data: inserted, error } = await supabase
       .from("trending_topics")
-      .insert(topicRows)
-      .select("id");
+      .insert(topicRow)
+      .select("id")
+      .single();
 
     if (error || !inserted) {
-      console.error("批量插入热点失败:", error);
+      console.error("插入热点失败 #" + item.rankOverall + " [" + item.titleZh + "]:", error?.message);
       continue;
     }
 
-    const allPostRows: Array<Record<string, unknown>> = [];
-    for (let j = 0; j < inserted.length; j++) {
-      const topicId = inserted[j].id;
-      const item = batch[j];
-      const topPosts = item.relatedPosts
-        .sort((a, b) => (b.likes + b.reposts + b.comments + b.views) - (a.likes + a.reposts + a.comments + a.views))
-        .slice(0, 5);
+    const topicId = inserted.id;
+    const topPosts = item.relatedPosts
+      .sort((a, b) => (b.likes + b.reposts + b.comments + b.views) - (a.likes + a.reposts + a.comments + a.views))
+      .slice(0, 5);
 
-      if (topPosts.length > 0) {
-        for (const p of topPosts) {
-          allPostRows.push({
-            topic_id: topicId,
-            platform: p.platform,
-            author_name: p.authorName || p.platform + "_user",
-            content_ja: p.content.slice(0, 500),
-            content_zh: p.contentZh || "",
-            likes: p.likes,
-            reposts: p.reposts,
-            comments: p.comments,
-            post_url: p.postUrl || "https://x.com/search?q=" + encodeURIComponent(p.content.slice(0, 30)),
-            posted_at: new Date().toISOString(),
-          });
-        }
-      } else {
-        const searchUrl = "https://x.com/search?q=" + encodeURIComponent(item.titleZh);
-        allPostRows.push({
+    const postRows: Array<Record<string, unknown>> = [];
+    if (topPosts.length > 0) {
+      for (const p of topPosts) {
+        postRows.push({
           topic_id: topicId,
-          platform: item.sources[0] || "yahoo",
-          author_name: "search",
-          content_ja: item.titleZh,
-          content_zh: item.summaryZh || "",
-          likes: 0,
-          reposts: 0,
-          comments: 0,
-          post_url: searchUrl,
+          platform: p.platform,
+          author_name: p.authorName || p.platform + "_user",
+          content_ja: p.content.slice(0, 500),
+          content_zh: p.contentZh || "",
+          likes: p.likes,
+          reposts: p.reposts,
+          comments: p.comments,
+          post_url: p.postUrl || "https://x.com/search?q=" + encodeURIComponent(p.content.slice(0, 30)),
           posted_at: new Date().toISOString(),
         });
       }
+    } else {
+      postRows.push({
+        topic_id: topicId,
+        platform: item.sources[0] || "yahoo",
+        author_name: "search",
+        content_ja: item.titleZh,
+        content_zh: item.summaryZh || "",
+        likes: 0,
+        reposts: 0,
+        comments: 0,
+        post_url: "https://x.com/search?q=" + encodeURIComponent(item.titleZh),
+        posted_at: new Date().toISOString(),
+      });
     }
 
-    if (allPostRows.length > 0) {
-      const { error: postErr } = await supabase.from("topic_posts").insert(allPostRows);
-      if (postErr) console.error("批量插入帖子失败:", postErr);
+    if (postRows.length > 0) {
+      const { error: postErr } = await supabase.from("topic_posts").insert(postRows);
+      if (postErr) console.error("插入帖子失败 #" + item.rankOverall + ":", postErr.message);
     }
   }
 }

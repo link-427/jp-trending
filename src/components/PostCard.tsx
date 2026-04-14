@@ -1,3 +1,5 @@
+"use client";
+
 import { TopicPost } from "@/types";
 import PlatformIcon from "./PlatformIcon";
 

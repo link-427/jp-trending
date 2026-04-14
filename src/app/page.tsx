@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import CategoryTabs from "@/components/CategoryTabs";
 import TopicItem from "@/components/TopicItem";
+import RefreshButton from "@/components/RefreshButton";
 import { TrendingTopicWithPosts } from "@/types";
 import { supabase } from "@/lib/supabase";
 
@@ -11,10 +12,21 @@ export default function HomePage() {
   const [topics, setTopics] = useState<TrendingTopicWithPosts[]>([]);
   const [loading, setLoading] = useState(true);
   const [updatedAt, setUpdatedAt] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const abortRef = useRef<AbortController | null>(null);
+
+  // 切换分类时设置 loading
+  const handleTabChange = useCallback((tab: string) => {
+    setActiveTab(tab);
+    setLoading(true);
+  }, []);
 
   useEffect(() => {
-    async function fetchTopics() {
-      setLoading(true);
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    (async () => {
       try {
         let query = supabase.from("trending_topics").select("*");
         if (!activeTab || activeTab === "总榜") {
@@ -24,6 +36,8 @@ export default function HomePage() {
         }
         const { data: dbTopics, error } = await query;
 
+        if (controller.signal.aborted) return;
+
         if (!error && dbTopics && dbTopics.length > 0) {
           const topicIds = dbTopics.map((t) => t.id);
           const { data: allPosts } = await supabase
@@ -31,6 +45,8 @@ export default function HomePage() {
             .select("*")
             .in("topic_id", topicIds)
             .order("likes", { ascending: false });
+
+          if (controller.signal.aborted) return;
 
           const topicsWithPosts = dbTopics.map((topic) => ({
             ...topic,
@@ -49,24 +65,38 @@ export default function HomePage() {
           setUpdatedAt("");
         }
       } catch {
-        setTopics([]);
-        setUpdatedAt("");
+        if (!controller.signal.aborted) {
+          setTopics([]);
+          setUpdatedAt("");
+        }
       }
-      setLoading(false);
-    }
-    fetchTopics();
-  }, [activeTab]);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [activeTab, refreshKey]);
+
+  // 刷新完成后重新加载数据（不刷新整个页面）
+  const handleRefreshComplete = useCallback(() => {
+    setLoading(true);
+    setRefreshKey((k) => k + 1);
+  }, []);
 
   return (
     <div className="max-w-2xl mx-auto bg-white min-h-screen">
       <header className="sticky top-0 z-10 bg-white border-b border-gray-200">
         <div className="flex items-center justify-between px-4 py-3">
           <h1 className="text-lg font-bold text-gray-900">日本热点雷达</h1>
-          <span className="text-xs text-gray-400">
-            {updatedAt ? "更新于 " + updatedAt : ""}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-400">
+              {updatedAt ? "更新于 " + updatedAt : ""}
+            </span>
+            <RefreshButton onRefreshComplete={handleRefreshComplete} />
+          </div>
         </div>
-        <CategoryTabs active={activeTab} onChange={setActiveTab} />
+        <CategoryTabs active={activeTab} onChange={handleTabChange} />
       </header>
 
       <main>
@@ -83,7 +113,7 @@ export default function HomePage() {
       </main>
 
       <footer className="text-center text-xs text-gray-300 py-6">
-        数据来源：X · Yahoo! Japan · TikTok · Instagram<br />每 30 分钟自动更新
+        数据来源：X · Yahoo! Japan · TikTok · Instagram
       </footer>
     </div>
   );
