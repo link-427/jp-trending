@@ -7,8 +7,9 @@ export interface RawPost {
   reposts: number;        // 转发/分享数
   comments: number;       // 评论数
   views: number;          // 浏览/播放量
-  postUrl: string;
-  contentZh?: string;   // AI 生成的中文解读        // 原帖链接
+  postUrl: string;        // 原帖链接
+  contentZh?: string;     // AI 生成的中文解读
+  followers?: number;     // 作者粉丝数（用于异常检测）
 }
 
 // 各平台抓取器的统一接口

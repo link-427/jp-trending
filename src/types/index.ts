@@ -7,6 +7,27 @@ export type HeatTag = "爆" | "热" | "新";
 // 分类类型
 export type Category = "娱乐" | "动漫" | "时尚" | "社会" | "科技" | "生活" | "萌宠";
 
+// 热度评分明细
+export interface ScoreBreakdown {
+  baseInteraction: number;
+  growth: number;
+  timeliness: number;
+  crossPlatform: number;
+  anomalyCoefficient: number;
+  platformWeight: number;
+}
+
+// 互动历史记录
+export interface InteractionHistory {
+  id: number;
+  topic_id: number;
+  recorded_at: string;
+  likes: number;
+  shares: number;
+  comments: number;
+  views: number;
+}
+
 // 热点主表
 export interface TrendingTopic {
   id: number;
@@ -19,6 +40,10 @@ export interface TrendingTopic {
   summary_zh: string;
   rank_overall: number | null;
   rank_category: number;
+  first_seen_at: string;
+  score_breakdown: ScoreBreakdown | null;
+  has_authority_media: boolean;
+  has_verified_account: boolean;
   created_at: string;
   updated_at: string;
 }
