@@ -2,7 +2,7 @@ import { fetchAllPlatforms, getPlatformStatus } from "./fetchers";
 import { analyzeAndGroupPosts, enrichXTrends, isAIConfigured, setAILogger, ProcessedTopic } from "./ai";
 import { supabase } from "./supabase";
 import type { HeatTag, InteractionHistory } from "@/types";
-import { RawPost } from "./fetchers/types";
+import type { RawPost } from "./fetchers/types";
 import { calculateHotScore, sumInteractions, HotScoreResult } from "./services/hotScoreCalculator";
 
 // 带热度评分的话题
@@ -121,34 +121,49 @@ function getHeatTag(rank: number): HeatTag {
   return "新";
 }
 
-// 为每个话题计算热度评分
+// 批量查询已有话题 + 互动历史，在内存中计算评分（仅 2 次 DB 查询）
 async function scoreTopics(
   topics: ProcessedTopic[],
   addLog: (msg: string) => void,
 ): Promise<ScoredTopic[]> {
-  const scored: ScoredTopic[] = [];
+  // 1. 批量查询已有话题（1 次查询）
+  const titles = topics.map(t => t.titleZh);
+  const { data: existingTopics } = await supabase
+    .from("trending_topics")
+    .select("id, title_zh, first_seen_at")
+    .in("title_zh", titles);
 
-  for (const topic of topics) {
-    // 匹配数据库中已有的话题
-    const existing = await findExistingTopic(topic.titleZh);
+  const existingMap = new Map<string, { id: number; first_seen_at: string }>();
+  for (const t of (existingTopics || [])) {
+    existingMap.set(t.title_zh, { id: t.id, first_seen_at: t.first_seen_at });
+  }
 
-    // 获取互动历史
-    let history: InteractionHistory[] = [];
-    if (existing) {
-      const { data } = await supabase
-        .from("interaction_history")
-        .select("*")
-        .eq("topic_id", existing.id)
-        .order("recorded_at", { ascending: false })
-        .limit(50);
-      history = (data || []) as InteractionHistory[];
+  // 2. 批量查询互动历史（1 次查询）
+  const existingIds = Array.from(existingMap.values()).map(t => t.id);
+  const historyMap = new Map<number, InteractionHistory[]>();
+  if (existingIds.length > 0) {
+    const { data: allHistory } = await supabase
+      .from("interaction_history")
+      .select("*")
+      .in("topic_id", existingIds)
+      .order("recorded_at", { ascending: false });
+
+    for (const h of ((allHistory || []) as InteractionHistory[])) {
+      const list = historyMap.get(h.topic_id) || [];
+      list.push(h);
+      historyMap.set(h.topic_id, list);
     }
+  }
 
+  // 3. 在内存中计算评分（0 次 DB 查询）
+  const scored: ScoredTopic[] = [];
+  for (const topic of topics) {
+    const existing = existingMap.get(topic.titleZh) || null;
+    const history = existing ? (historyMap.get(existing.id) || []) : [];
     const firstSeenAt = existing?.first_seen_at
       ? new Date(existing.first_seen_at)
       : new Date();
 
-    // 计算热度评分
     const scoreResult = calculateHotScore(
       topic.relatedPosts,
       topic.sources,
@@ -172,20 +187,11 @@ async function scoreTopics(
   return scored;
 }
 
-// 按 title_zh 匹配已有话题
-async function findExistingTopic(titleZh: string): Promise<{ id: number; first_seen_at: string } | null> {
-  const { data } = await supabase
-    .from("trending_topics")
-    .select("id, first_seen_at")
-    .eq("title_zh", titleZh)
-    .limit(1)
-    .single();
-  return data;
-}
-
-// upsert 模式写入数据库
+// 批量写入数据库（优化：减少串行查询次数）
 async function upsertToDatabase(items: FinalItem[], addLog: (msg: string) => void) {
-  // 1. 清除所有当前排名（不在本次结果中的话题不会显示在榜单上）
+  const now = new Date().toISOString();
+
+  // 1. 清除所有当前排名
   const { error: clearErr } = await supabase
     .from("trending_topics")
     .update({ rank_overall: null, rank_category: null })
@@ -194,11 +200,45 @@ async function upsertToDatabase(items: FinalItem[], addLog: (msg: string) => voi
     addLog("清除旧排名失败: " + clearErr.message);
   }
 
-  let upsertCount = 0;
-  let insertCount = 0;
+  // 2. 分离已有话题和新话题
+  const existingItems = items.filter(i => i.existingId);
+  const newItems = items.filter(i => !i.existingId);
 
-  for (const item of items) {
-    const topicRow = {
+  // 3. 批量删除已有话题的旧帖子（1 次查询）
+  if (existingItems.length > 0) {
+    const existingIds = existingItems.map(i => i.existingId!);
+    await supabase.from("topic_posts").delete().in("topic_id", existingIds);
+  }
+
+  // 4. 逐个更新已有话题（Supabase 不支持批量更新不同数据）
+  const topicIdMap = new Map<string, number>();
+  for (const item of existingItems) {
+    const { error } = await supabase
+      .from("trending_topics")
+      .update({
+        title_ja: item.titleJa,
+        category: item.category,
+        heat_score: item.hotScoreResult.totalScore,
+        heat_tag: item.heatTag,
+        sources: item.sources,
+        summary_zh: item.summaryZh,
+        rank_overall: item.rankOverall,
+        rank_category: item.rankCategory,
+        score_breakdown: item.hotScoreResult.breakdown,
+        updated_at: now,
+      })
+      .eq("id", item.existingId!);
+
+    if (error) {
+      addLog("更新话题失败 #" + item.rankOverall + " [" + item.titleZh + "]: " + error.message);
+    } else {
+      topicIdMap.set(item.titleZh, item.existingId!);
+    }
+  }
+
+  // 5. 批量插入新话题（1 次查询）
+  if (newItems.length > 0) {
+    const newRows = newItems.map(item => ({
       title_ja: item.titleJa,
       title_zh: item.titleZh,
       category: item.category,
@@ -209,65 +249,57 @@ async function upsertToDatabase(items: FinalItem[], addLog: (msg: string) => voi
       rank_overall: item.rankOverall,
       rank_category: item.rankCategory,
       score_breakdown: item.hotScoreResult.breakdown,
-      updated_at: new Date().toISOString(),
-    };
+      first_seen_at: item.firstSeenAt.toISOString(),
+      updated_at: now,
+    }));
 
-    let topicId: number;
+    const { data: inserted, error } = await supabase
+      .from("trending_topics")
+      .insert(newRows)
+      .select("id, title_zh");
 
-    if (item.existingId) {
-      // 更新已有话题
-      const { error } = await supabase
-        .from("trending_topics")
-        .update(topicRow)
-        .eq("id", item.existingId);
-
-      if (error) {
-        addLog("更新话题失败 #" + item.rankOverall + " [" + item.titleZh + "]: " + error.message);
-        continue;
+    if (error) {
+      addLog("批量插入新话题失败: " + error.message);
+    } else if (inserted) {
+      for (const row of inserted) {
+        topicIdMap.set(row.title_zh, row.id);
       }
-      topicId = item.existingId;
-      upsertCount++;
-    } else {
-      // 插入新话题
-      const { data: inserted, error } = await supabase
-        .from("trending_topics")
-        .insert({
-          ...topicRow,
-          first_seen_at: item.firstSeenAt.toISOString(),
-        })
-        .select("id")
-        .single();
-
-      if (error || !inserted) {
-        addLog("插入话题失败 #" + item.rankOverall + " [" + item.titleZh + "]: " + (error?.message || "无返回数据"));
-        continue;
-      }
-      topicId = inserted.id;
-      insertCount++;
     }
+  }
 
-    // 记录互动历史快照
+  // 6. 批量插入互动历史快照（1 次查询）
+  const historyRows: Array<Record<string, unknown>> = [];
+  for (const item of items) {
+    const topicId = topicIdMap.get(item.titleZh);
+    if (!topicId) continue;
     const interactions = sumInteractions(item.relatedPosts);
-    await supabase.from("interaction_history").insert({
+    historyRows.push({
       topic_id: topicId,
-      recorded_at: new Date().toISOString(),
+      recorded_at: now,
       likes: interactions.likes,
       shares: interactions.shares,
       comments: interactions.comments,
       views: interactions.views,
     });
+  }
+  if (historyRows.length > 0) {
+    const { error: histErr } = await supabase.from("interaction_history").insert(historyRows);
+    if (histErr) addLog("批量插入互动历史失败: " + histErr.message);
+  }
 
-    // 更新关联帖子（先清旧的，再插新的）
-    await supabase.from("topic_posts").delete().eq("topic_id", topicId);
+  // 7. 批量插入所有关联帖子（1 次查询）
+  const allPostRows: Array<Record<string, unknown>> = [];
+  for (const item of items) {
+    const topicId = topicIdMap.get(item.titleZh);
+    if (!topicId) continue;
 
-    const topPosts = item.relatedPosts
+    const topPosts = [...item.relatedPosts]
       .sort((a, b) => (b.likes + b.reposts + b.comments + b.views) - (a.likes + a.reposts + a.comments + a.views))
       .slice(0, 5);
 
-    const postRows: Array<Record<string, unknown>> = [];
     if (topPosts.length > 0) {
       for (const p of topPosts) {
-        postRows.push({
+        allPostRows.push({
           topic_id: topicId,
           platform: p.platform,
           author_name: p.authorName || p.platform + "_user",
@@ -277,11 +309,11 @@ async function upsertToDatabase(items: FinalItem[], addLog: (msg: string) => voi
           reposts: p.reposts,
           comments: p.comments,
           post_url: p.postUrl || "https://x.com/search?q=" + encodeURIComponent(p.content.slice(0, 30)),
-          posted_at: new Date().toISOString(),
+          posted_at: now,
         });
       }
     } else {
-      postRows.push({
+      allPostRows.push({
         topic_id: topicId,
         platform: item.sources[0] || "yahoo",
         author_name: "search",
@@ -291,15 +323,14 @@ async function upsertToDatabase(items: FinalItem[], addLog: (msg: string) => voi
         reposts: 0,
         comments: 0,
         post_url: "https://x.com/search?q=" + encodeURIComponent(item.titleZh),
-        posted_at: new Date().toISOString(),
+        posted_at: now,
       });
     }
-
-    if (postRows.length > 0) {
-      const { error: postErr } = await supabase.from("topic_posts").insert(postRows);
-      if (postErr) addLog("插入帖子失败 #" + item.rankOverall + ": " + postErr.message);
-    }
+  }
+  if (allPostRows.length > 0) {
+    const { error: postErr } = await supabase.from("topic_posts").insert(allPostRows);
+    if (postErr) addLog("批量插入帖子失败: " + postErr.message);
   }
 
-  addLog("数据库写入：更新 " + upsertCount + " 个, 新增 " + insertCount + " 个");
+  addLog("数据库写入：更新 " + existingItems.length + " 个, 新增 " + (topicIdMap.size - existingItems.length) + " 个");
 }
