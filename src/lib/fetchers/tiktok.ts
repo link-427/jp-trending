@@ -1,11 +1,12 @@
 import { PlatformFetcher, RawPost } from "./types";
 
-// 判断文本是否与日本相关（平假名、片假名或 CJK 汉字）
+// 宽松判断文本是否与日本相关
+// region=JP 已保证内容在日本区热门，这里只过滤纯英文/纯韩文等明显无关内容
 function isJapaneseRelated(text: string): boolean {
-  const jpChars = text.match(/[\u3040-\u309F\u30A0-\u30FF]/g);
-  if (jpChars && jpChars.length >= 2) return true;
-  // 含有日语常见标签也算
-  if (/日本|東京|大阪|#jp|#japan/i.test(text)) return true;
+  // 平假名、片假名、CJK 汉字任意出现 1 个即通过
+  if (/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/.test(text)) return true;
+  // 含有日本相关关键词也算
+  if (/日本|東京|大阪|#jp|#japan|#tokyo|#osaka/i.test(text)) return true;
   return false;
 }
 
