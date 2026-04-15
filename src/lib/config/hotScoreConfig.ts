@@ -1,11 +1,11 @@
 // 热度算法配置参数
 export const HOT_SCORE_CONFIG = {
-  // 各维度权重
+  // 各维度权重（互动为主，时效和增长为辅）
   weights: {
-    baseInteraction: 0.3,   // 基础互动分
-    growth: 0.3,            // 增长速度分
-    timeliness: 0.25,       // 时效性分
-    crossPlatform: 0.15,    // 跨平台分
+    baseInteraction: 0.4,   // 基础互动分（真实互动最重要）
+    growth: 0.2,            // 增长速度分（降低，避免冷启动偏差）
+    timeliness: 0.2,        // 时效性分（降低，避免惩罚已有话题）
+    crossPlatform: 0.2,     // 跨平台分（提升，鼓励多平台覆盖）
   },
 
   // 互动类型权重（转发和评论比点赞更有价值）
@@ -16,17 +16,17 @@ export const HOT_SCORE_CONFIG = {
     view: 0.01,
   },
 
-  // 平台权重（新闻类平台权重更高）
+  // 平台权重（缩小差距，避免乘法系数造成过大偏差）
   platformWeights: {
-    yahoo: 1.1,
+    yahoo: 1.05,
     x: 1.0,
-    instagram: 0.85,
-    tiktok: 0.8,
+    instagram: 0.95,
+    tiktok: 0.92,
   } as Record<string, number>,
 
-  // 时效性衰减参数
+  // 时效性衰减参数（半衰期约 14 小时，比之前的 4.6 小时温和很多）
   timeliness: {
-    lambda: 0.15,  // 衰减系数，越大衰减越快
+    lambda: 0.05,
   },
 
   // 异常检测阈值

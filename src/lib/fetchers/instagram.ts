@@ -115,18 +115,14 @@ function parseInstagramResponse(data: unknown, fallbackAuthor: string): RawPost[
     const shortcode = String(node.code || node.shortcode || "");
     const postUrl = shortcode ? "https://www.instagram.com/p/" + shortcode + "/" : "";
 
-    // Instagram 点赞/评论数较少，按比例放大以匹配其他平台的量级
-    // Instagram 上 1000 赞约等于 Twitter 上 5 万讨论
-    const engagementMultiplier = 50;
-
     posts.push({
       platform: "instagram",
       content: text.slice(0, 500),
       authorName,
-      likes: likes * engagementMultiplier,
+      likes,
       reposts: 0,
-      comments: comments * engagementMultiplier,
-      views: views > 0 ? views : likes * engagementMultiplier,
+      comments,
+      views: views > 0 ? views : likes,
       postUrl,
     });
   }

@@ -73,8 +73,8 @@ function calculateBaseInteraction(posts: RawPost[], platforms: string[]): number
 // 增长速度分 = (min(rate_1h,10)×0.4 + min(rate_3h,5)×0.3 + min(rate_6h,3)×0.2 + min(rate_24h,2)×0.1) × 10
 function calculateGrowth(history: InteractionHistory[]): number {
   if (history.length < 2) {
-    // 冷启动：首次出现没有历史数据，给中等分
-    return 50;
+    // 冷启动：没有历史数据，给较低分，避免新话题仅靠冷启动就碾压有数据的话题
+    return 30;
   }
 
   const now = new Date();

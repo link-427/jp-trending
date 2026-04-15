@@ -2,7 +2,6 @@ import { fetchAllPlatforms, getPlatformStatus } from "./fetchers";
 import { analyzeAndGroupPosts, enrichXTrends, isAIConfigured, setAILogger, ProcessedTopic } from "./ai";
 import { supabase } from "./supabase";
 import type { HeatTag, InteractionHistory } from "@/types";
-import type { RawPost } from "./fetchers/types";
 import { calculateHotScore, sumInteractions, HotScoreResult } from "./services/hotScoreCalculator";
 
 // 带热度评分的话题

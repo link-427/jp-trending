@@ -73,11 +73,11 @@ function parseXTrends(data: unknown): RawPost[] {
     const volume = Number(t.tweet_volume || 0);
 
     // 如果 API 提供了 tweet_volume 就用真实的
-    // 否则按排名估算：日本推特热搜 #1 约 30-50 万讨论
-    // 使用指数衰减：rank1=300000, rank10=100000, rank30=30000, rank50=10000
+    // 否则按排名估算一个参考值（不应过高，避免和真实互动数据竞争）
+    // rank1=50000, rank10=25000, rank30=8000, rank50=3000
     const estimatedVolume = volume > 0
       ? volume
-      : Math.round(300000 * Math.pow(0.93, index));
+      : Math.round(50000 * Math.pow(0.94, index));
 
     return {
       platform: "x" as const,

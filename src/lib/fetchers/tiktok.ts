@@ -1,6 +1,15 @@
-import { PlatformFetcher, RawPost, isJapaneseText } from "./types";
+import { PlatformFetcher, RawPost } from "./types";
 
-// TikTok 日本区热门视频，只保留日语内容
+// 判断文本是否与日本相关（平假名、片假名或 CJK 汉字）
+function isJapaneseRelated(text: string): boolean {
+  const jpChars = text.match(/[\u3040-\u309F\u30A0-\u30FF]/g);
+  if (jpChars && jpChars.length >= 2) return true;
+  // 含有日语常见标签也算
+  if (/日本|東京|大阪|#jp|#japan/i.test(text)) return true;
+  return false;
+}
+
+// TikTok 日本区热门视频
 export const tiktokFetcher: PlatformFetcher = {
   name: "TikTok",
   isConfigured: () => !!process.env.TIKTOK_API_KEY,
@@ -9,7 +18,8 @@ export const tiktokFetcher: PlatformFetcher = {
     if (!apiKey) { console.log("TikTok: 未配置 TIKTOK_API_KEY"); return []; }
 
     const host = "tiktok-scraper7.p.rapidapi.com";
-    const url = "https://" + host + "/feed/list?region=JP&count=30";
+    // 请求更多视频以提高日语命中率
+    const url = "https://" + host + "/feed/list?region=JP&count=50";
     try {
       console.log("TikTok: 请求 " + host + "...");
       const res = await fetch(url, {
@@ -67,7 +77,7 @@ function parseTikTokVideos(data: unknown): RawPost[] {
       desc = String(v.content_desc || v.desc || v.title || "").trim();
     }
 
-    if (!isJapaneseText(desc)) {
+    if (!isJapaneseRelated(desc)) {
       skipped++;
       continue;
     }
