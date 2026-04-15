@@ -1,16 +1,7 @@
 import { PlatformFetcher, RawPost } from "./types";
 
-// 宽松判断文本是否与日本相关
-// region=JP 已保证内容在日本区热门，这里只过滤纯英文/纯韩文等明显无关内容
-function isJapaneseRelated(text: string): boolean {
-  // 平假名、片假名、CJK 汉字任意出现 1 个即通过
-  if (/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/.test(text)) return true;
-  // 含有日本相关关键词也算
-  if (/日本|東京|大阪|#jp|#japan|#tokyo|#osaka/i.test(text)) return true;
-  return false;
-}
-
 // TikTok 日本区热门视频
+// region=JP 已保证返回日本区内容，不再额外做日语文本过滤
 export const tiktokFetcher: PlatformFetcher = {
   name: "TikTok",
   isConfigured: () => !!process.env.TIKTOK_API_KEY,
@@ -64,10 +55,9 @@ function parseTikTokVideos(data: unknown): RawPost[] {
     console.log("TikTok: 没有视频数据, keys:", Object.keys(obj).join(","));
     return [];
   }
-  console.log("TikTok: 找到 " + videoList.length + " 条视频（过滤前）");
+  console.log("TikTok: 找到 " + videoList.length + " 条视频");
 
   const posts: RawPost[] = [];
-  let skipped = 0;
   for (const item of videoList) {
     const v = (item || {}) as Record<string, unknown>;
 
@@ -76,11 +66,6 @@ function parseTikTokVideos(data: unknown): RawPost[] {
       desc = v.content_desc.map(String).join(" ").trim();
     } else {
       desc = String(v.content_desc || v.desc || v.title || "").trim();
-    }
-
-    if (!isJapaneseRelated(desc)) {
-      skipped++;
-      continue;
     }
 
     const author = (v.author || {}) as Record<string, unknown>;
@@ -108,6 +93,6 @@ function parseTikTokVideos(data: unknown): RawPost[] {
     });
   }
 
-  console.log("TikTok: 过滤掉 " + skipped + " 条非日语内容，返回 " + posts.length + " 条帖子");
+  console.log("TikTok: 返回 " + posts.length + " 条帖子");
   return posts;
 }
