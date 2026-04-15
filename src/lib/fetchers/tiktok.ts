@@ -1,7 +1,14 @@
 import { PlatformFetcher, RawPost } from "./types";
 
-// TikTok 日本区热门视频
-// region=JP 已保证返回日本区内容，不再额外做日语文本过滤
+// TikTok 日本区热门内容
+// 策略：搜索日本热门标签 → 获取标签下的热门帖子
+// 比 feed/list 更精准，返回的都是日本相关的真实热门内容
+
+const HOST = "tiktok-scraper7.p.rapidapi.com";
+
+// 搜索用的日语关键词（覆盖多个热门分类）
+const SEARCH_KEYWORDS = ["トレンド", "日本", "東京グルメ", "バズ"];
+
 export const tiktokFetcher: PlatformFetcher = {
   name: "TikTok",
   isConfigured: () => !!process.env.TIKTOK_API_KEY,
@@ -9,28 +16,29 @@ export const tiktokFetcher: PlatformFetcher = {
     const apiKey = process.env.TIKTOK_API_KEY;
     if (!apiKey) { console.log("TikTok: 未配置 TIKTOK_API_KEY"); return []; }
 
-    const host = "tiktok-scraper7.p.rapidapi.com";
-    // 请求更多视频以提高日语命中率
-    const url = "https://" + host + "/feed/list?region=JP&count=50";
     try {
-      console.log("TikTok: 请求 " + host + "...");
-      const res = await fetch(url, {
-        headers: { "X-RapidAPI-Key": apiKey, "X-RapidAPI-Host": host },
-      });
-      console.log("TikTok: HTTP " + res.status);
-      if (!res.ok) {
-        const errText = await res.text().catch(() => "");
-        console.error("TikTok 错误: " + errText.slice(0, 300));
-        return [];
+      // 第 1 步：搜索热门标签
+      console.log("TikTok: 搜索日本热门标签...");
+      const challenges = await searchChallenges(apiKey);
+      console.log("TikTok: 找到 " + challenges.length + " 个热门标签");
+
+      if (challenges.length === 0) return [];
+
+      // 第 2 步：取浏览量最高的几个标签，获取帖子
+      const topChallenges = challenges
+        .sort((a, b) => b.viewCount - a.viewCount)
+        .slice(0, 6);
+
+      console.log("TikTok: 获取 " + topChallenges.length + " 个标签下的帖子...");
+      const allPosts: RawPost[] = [];
+
+      for (const challenge of topChallenges) {
+        const posts = await fetchChallengePosts(apiKey, challenge.id, challenge.name);
+        allPosts.push(...posts);
       }
-      const text = await res.text();
-      let data;
-      try { data = JSON.parse(text); } catch {
-        console.error("TikTok: 响应不是有效JSON:", text.slice(0, 200));
-        return [];
-      }
-      console.log("TikTok code:" + data.code + " msg:" + data.msg);
-      return parseTikTokVideos(data);
+
+      console.log("TikTok: 共获取 " + allPosts.length + " 条帖子");
+      return allPosts;
     } catch (error) {
       console.error("TikTok 请求失败:", error);
       return [];
@@ -38,61 +46,95 @@ export const tiktokFetcher: PlatformFetcher = {
   },
 };
 
-function parseTikTokVideos(data: unknown): RawPost[] {
-  if (!data || typeof data !== "object") return [];
-  const obj = data as Record<string, unknown>;
+interface ChallengeInfo {
+  id: string;
+  name: string;
+  viewCount: number;
+}
 
-  let videoList: unknown[] = [];
-  if (Array.isArray(obj.data)) videoList = obj.data;
-  else if (obj.data && typeof obj.data === "object") {
-    const d = obj.data as Record<string, unknown>;
-    videoList = (d.items || d.videos || d.aweme_list || []) as unknown[];
+// 搜索日本相关的热门标签
+async function searchChallenges(apiKey: string): Promise<ChallengeInfo[]> {
+  const seen = new Set<string>();
+  const results: ChallengeInfo[] = [];
+
+  for (const keyword of SEARCH_KEYWORDS) {
+    try {
+      const url = "https://" + HOST + "/challenge/search?keywords=" + encodeURIComponent(keyword) + "&count=10";
+      const res = await fetch(url, {
+        headers: { "X-RapidAPI-Key": apiKey, "X-RapidAPI-Host": HOST },
+      });
+
+      if (!res.ok) continue;
+      const data = await res.json();
+
+      const list = data?.data?.challenge_list;
+      if (!Array.isArray(list)) continue;
+
+      for (const c of list) {
+        const id = String(c.id || "");
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        results.push({
+          id,
+          name: String(c.cha_name || ""),
+          viewCount: Number(c.view_count || 0),
+        });
+      }
+    } catch {
+      console.log("TikTok: 搜索标签 [" + keyword + "] 失败");
+    }
   }
-  if (videoList.length === 0 && Array.isArray(obj.aweme_list)) videoList = obj.aweme_list;
-  if (videoList.length === 0 && Array.isArray(obj.items)) videoList = obj.items;
 
-  if (videoList.length === 0) {
-    console.log("TikTok: 没有视频数据, keys:", Object.keys(obj).join(","));
-    return [];
-  }
-  console.log("TikTok: 找到 " + videoList.length + " 条视频");
+  return results;
+}
 
-  const posts: RawPost[] = [];
-  for (const item of videoList) {
-    const v = (item || {}) as Record<string, unknown>;
+// 获取指定标签下的热门帖子
+async function fetchChallengePosts(apiKey: string, challengeId: string, challengeName: string): Promise<RawPost[]> {
+  try {
+    const url = "https://" + HOST + "/challenge/posts?challenge_id=" + challengeId + "&count=10";
+    const res = await fetch(url, {
+      headers: { "X-RapidAPI-Key": apiKey, "X-RapidAPI-Host": HOST },
+    });
 
-    let desc = "";
-    if (Array.isArray(v.content_desc)) {
-      desc = v.content_desc.map(String).join(" ").trim();
-    } else {
-      desc = String(v.content_desc || v.desc || v.title || "").trim();
+    if (!res.ok) return [];
+    const data = await res.json();
+
+    const videos = data?.data?.videos;
+    if (!Array.isArray(videos)) return [];
+
+    const posts: RawPost[] = [];
+    for (const v of videos) {
+      const desc = String(v.title || v.desc || v.content_desc || "").trim();
+      const author = v.author || {};
+      const authorName = String(author.nickname || author.unique_id || "");
+      const authorId = String(author.unique_id || "user");
+      const likes = Number(v.digg_count || 0);
+      const reposts = Number(v.share_count || 0);
+      const comments = Number(v.comment_count || 0);
+      const views = Number(v.play_count || 0);
+      const videoId = String(v.video_id || v.aweme_id || v.id || "");
+      const postUrl = videoId
+        ? "https://www.tiktok.com/@" + authorId + "/video/" + videoId
+        : "";
+      const content = desc.length >= 2 ? desc : "#" + challengeName + " [TikTok视频] " + authorName;
+
+      posts.push({
+        platform: "tiktok",
+        content,
+        authorName,
+        likes,
+        reposts,
+        comments,
+        views,
+        postUrl,
+        followers: Number(author.follower_count || 0),
+      });
     }
 
-    const author = (v.author || {}) as Record<string, unknown>;
-    const authorName = String(author.nickname || author.unique_id || "");
-    const authorId = String(author.unique_id || "user");
-    const likes = Number(v.digg_count || 0);
-    const reposts = Number(v.share_count || 0);
-    const comments = Number(v.comment_count || 0);
-    const views = Number(v.play_count || 0);
-    const videoId = String(v.video_id || v.aweme_id || v.id || "");
-    const postUrl = videoId
-      ? "https://www.tiktok.com/@" + authorId + "/video/" + videoId
-      : "";
-    const content = desc.length >= 2 ? desc : "[TikTok视频] " + authorName;
-
-    posts.push({
-      platform: "tiktok",
-      content,
-      authorName,
-      likes,
-      reposts,
-      comments,
-      views,
-      postUrl,
-    });
+    console.log("TikTok: #" + challengeName + " => " + posts.length + " 条帖子");
+    return posts;
+  } catch {
+    console.log("TikTok: 获取 #" + challengeName + " 帖子失败");
+    return [];
   }
-
-  console.log("TikTok: 返回 " + posts.length + " 条帖子");
-  return posts;
 }
