@@ -9,6 +9,9 @@ const HOST = "tiktok-scraper7.p.rapidapi.com";
 // 搜索用的日语关键词（覆盖多个热门分类）
 const SEARCH_KEYWORDS = ["トレンド", "日本", "東京グルメ", "バズ"];
 
+// 只保留 14 天内发布的帖子
+const MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
 export const tiktokFetcher: PlatformFetcher = {
   name: "TikTok",
   isConfigured: () => !!process.env.TIKTOK_API_KEY,
@@ -103,7 +106,16 @@ async function fetchChallengePosts(apiKey: string, challengeId: string, challeng
     if (!Array.isArray(videos)) return [];
 
     const posts: RawPost[] = [];
+    const now = Date.now();
+    let skippedOld = 0;
     for (const v of videos) {
+      // 过滤超过 14 天的旧帖子
+      const createTime = Number(v.create_time || 0);
+      if (createTime > 0 && (now - createTime * 1000) > MAX_AGE_MS) {
+        skippedOld++;
+        continue;
+      }
+
       const desc = String(v.title || v.desc || v.content_desc || "").trim();
       const author = v.author || {};
       const authorName = String(author.nickname || author.unique_id || "");
@@ -131,7 +143,7 @@ async function fetchChallengePosts(apiKey: string, challengeId: string, challeng
       });
     }
 
-    console.log("TikTok: #" + challengeName + " => " + posts.length + " 条帖子");
+    console.log("TikTok: #" + challengeName + " => " + posts.length + " 条帖子" + (skippedOld > 0 ? "（过滤掉 " + skippedOld + " 条超过14天的）" : ""));
     return posts;
   } catch {
     console.log("TikTok: 获取 #" + challengeName + " 帖子失败");

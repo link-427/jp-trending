@@ -8,6 +8,9 @@ const JP_ACCOUNTS = [
   "tastemade_japan",
 ];
 
+// 只保留 14 天内发布的帖子
+const MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
 async function fetchWithTimeout(url: string, options: RequestInit, ms: number): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
@@ -92,9 +95,18 @@ function parseInstagramResponse(data: unknown, fallbackAuthor: string): RawPost[
 
   const posts: RawPost[] = [];
   let skipped = 0;
+  let skippedOld = 0;
+  const now = Date.now();
   for (const edge of edges) {
     const edgeObj = (edge || {}) as Record<string, unknown>;
     const node = (edgeObj.node || edgeObj) as Record<string, unknown>;
+
+    // 过滤超过 14 天的旧帖子
+    const takenAt = Number(node.taken_at || 0);
+    if (takenAt > 0 && (now - takenAt * 1000) > MAX_AGE_MS) {
+      skippedOld++;
+      continue;
+    }
 
     const caption = node.caption as Record<string, unknown> | string | null;
     let text = "";
@@ -127,5 +139,6 @@ function parseInstagramResponse(data: unknown, fallbackAuthor: string): RawPost[
     });
   }
   if (skipped > 0) console.log("Instagram: 过滤掉 " + skipped + " 条非日语内容");
+  if (skippedOld > 0) console.log("Instagram: 过滤掉 " + skippedOld + " 条超过14天的帖子");
   return posts;
 }
