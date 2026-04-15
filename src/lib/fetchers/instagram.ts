@@ -1,25 +1,16 @@
-import { PlatformFetcher, RawPost, isJapaneseText } from "./types";
+import { PlatformFetcher, RawPost } from "./types";
 
-// Instagram 日本热门账号帖子（作为补充内容）
-// 注意：这些不是"热搜"，而是日本热门账号的最新帖子
-const JP_ACCOUNTS = [
-  "tokyocameraclub",
-  "retrip_gourmet",
-  "tastemade_japan",
-];
+// Instagram 日本热门内容
+// 策略：搜索日本热门标签 → 获取标签下的热门帖子 + 最新帖子
+// 使用 instagram-scraper-stable-api 的 hashtag 端点
+
+const HOST = "instagram-scraper-stable-api.p.rapidapi.com";
+
+// 搜索用的日语标签（覆盖多个热门分类）
+const HASHTAGS = ["日本", "東京グルメ", "トレンド", "日本旅行", "コスメ", "日本ファッション"];
 
 // 只保留 14 天内发布的帖子
 const MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
-
-async function fetchWithTimeout(url: string, options: RequestInit, ms: number): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 export const instagramFetcher: PlatformFetcher = {
   name: "Instagram",
@@ -28,117 +19,95 @@ export const instagramFetcher: PlatformFetcher = {
     const apiKey = process.env.INSTAGRAM_API_KEY;
     if (!apiKey) { console.log("Instagram: 未配置 INSTAGRAM_API_KEY"); return []; }
 
-    const host = "instagram120.p.rapidapi.com";
-    const url = "https://" + host + "/api/instagram/posts";
+    try {
+      console.log("Instagram: 搜索日本热门标签...");
+      const allPosts: RawPost[] = [];
 
-    const results = await Promise.allSettled(
-      JP_ACCOUNTS.map(async (username) => {
-        console.log("Instagram: 抓取 @" + username + "...");
-        const res = await fetchWithTimeout(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-RapidAPI-Key": apiKey,
-            "X-RapidAPI-Host": host,
-          },
-          body: JSON.stringify({ username, maxId: "" }),
-        }, 8000);
-        console.log("Instagram @" + username + ": HTTP " + res.status);
-        if (!res.ok) {
-          const errText = await res.text().catch(() => "");
-          console.error("Instagram @" + username + " 错误: " + errText.slice(0, 200));
-          return [];
-        }
-        const rawText = await res.text();
-        let data;
-        try { data = JSON.parse(rawText); } catch {
-          console.error("Instagram @" + username + ": 响应不是有效JSON:", rawText.slice(0, 200));
-          return [];
-        }
-        const posts = parseInstagramResponse(data, username);
-        console.log("Instagram @" + username + ": " + posts.length + " 条帖子");
-        return posts;
-      })
-    );
-
-    const allPosts: RawPost[] = [];
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      if (result.status === "fulfilled") {
-        allPosts.push(...result.value);
-      } else {
-        console.log("Instagram @" + JP_ACCOUNTS[i] + " 超时或失败: " + String(result.reason).slice(0, 100));
+      for (const hashtag of HASHTAGS) {
+        const posts = await fetchHashtagPosts(apiKey, hashtag);
+        allPosts.push(...posts);
       }
+
+      console.log("Instagram: 共获取 " + allPosts.length + " 条帖子");
+      return allPosts;
+    } catch (error) {
+      console.error("Instagram 请求失败:", error);
+      return [];
     }
-    console.log("Instagram: 共返回 " + allPosts.length + " 条帖子");
-    return allPosts;
   },
 };
 
-function parseInstagramResponse(data: unknown, fallbackAuthor: string): RawPost[] {
-  if (!data || typeof data !== "object") return [];
-  const obj = data as Record<string, unknown>;
+// 获取指定标签下的帖子（热门 + 最新）
+async function fetchHashtagPosts(apiKey: string, hashtag: string): Promise<RawPost[]> {
+  try {
+    const url = "https://" + HOST + "/search_hashtag.php?hashtag=" + encodeURIComponent(hashtag);
+    const res = await fetch(url, {
+      headers: {
+        "Content-Type": "application/json",
+        "X-RapidAPI-Key": apiKey,
+        "X-RapidAPI-Host": HOST,
+      },
+    });
 
-  let edges: unknown[] = [];
-  if (obj.result && typeof obj.result === "object") {
-    const result = obj.result as Record<string, unknown>;
-    if (Array.isArray(result.edges)) edges = result.edges;
-  }
-  if (edges.length === 0 && Array.isArray(obj.data)) edges = obj.data;
-  if (edges.length === 0 && Array.isArray(obj.edges)) edges = obj.edges;
-  if (edges.length === 0 && Array.isArray(obj.items)) edges = obj.items;
+    if (!res.ok) {
+      console.log("Instagram: #" + hashtag + " HTTP " + res.status);
+      return [];
+    }
 
-  if (edges.length === 0) {
-    console.log("Instagram: 空数据, keys:", Object.keys(obj).join(","));
+    const data = await res.json();
+
+    // 合并热门帖子和最新帖子
+    const topEdges = data.top_posts?.edges || [];
+    const recentEdges = data.posts?.edges || [];
+    const allEdges = [...topEdges, ...recentEdges];
+
+    const posts: RawPost[] = [];
+    const now = Date.now();
+    let skippedOld = 0;
+    const seenIds = new Set<string>();
+
+    for (const edge of allEdges) {
+      const node = edge.node || edge;
+      const id = String(node.id || node.shortcode || "");
+
+      // 去重
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+
+      // 过滤超过 14 天的旧帖子
+      const takenAt = Number(node.taken_at_timestamp || 0);
+      if (takenAt > 0 && (now - takenAt * 1000) > MAX_AGE_MS) {
+        skippedOld++;
+        continue;
+      }
+
+      // 提取文案
+      const captionEdges = node.edge_media_to_caption?.edges;
+      const text = captionEdges?.[0]?.node?.text || "";
+      if (text.length < 2) continue;
+
+      const likes = Number(node.edge_liked_by?.count || 0);
+      const comments = Number(node.edge_media_to_comment?.count || 0);
+      const shortcode = String(node.shortcode || "");
+      const postUrl = shortcode ? "https://www.instagram.com/p/" + shortcode + "/" : "";
+      const ownerId = String(node.owner?.id || "");
+
+      posts.push({
+        platform: "instagram",
+        content: text.slice(0, 500),
+        authorName: ownerId ? "ig_user_" + ownerId : "instagram",
+        likes,
+        reposts: 0,
+        comments,
+        views: likes,
+        postUrl,
+      });
+    }
+
+    console.log("Instagram: #" + hashtag + " => " + posts.length + " 条帖子" + (skippedOld > 0 ? "（过滤掉 " + skippedOld + " 条超过14天的）" : ""));
+    return posts;
+  } catch (error) {
+    console.log("Instagram: 获取 #" + hashtag + " 失败: " + String(error).slice(0, 80));
     return [];
   }
-
-  const posts: RawPost[] = [];
-  let skipped = 0;
-  let skippedOld = 0;
-  const now = Date.now();
-  for (const edge of edges) {
-    const edgeObj = (edge || {}) as Record<string, unknown>;
-    const node = (edgeObj.node || edgeObj) as Record<string, unknown>;
-
-    // 过滤超过 14 天的旧帖子
-    const takenAt = Number(node.taken_at || 0);
-    if (takenAt > 0 && (now - takenAt * 1000) > MAX_AGE_MS) {
-      skippedOld++;
-      continue;
-    }
-
-    const caption = node.caption as Record<string, unknown> | string | null;
-    let text = "";
-    if (typeof caption === "string") text = caption;
-    else if (caption && typeof caption === "object") text = String(caption.text || "");
-    if (text.length < 2) continue;
-
-    if (!isJapaneseText(text)) {
-      skipped++;
-      continue;
-    }
-
-    const user = (node.user || node.owner || {}) as Record<string, unknown>;
-    const authorName = String(user.username || fallbackAuthor);
-    const likes = Number(node.like_count || 0);
-    const comments = Number(node.comment_count || 0);
-    const views = Number(node.view_count || node.video_view_count || 0);
-    const shortcode = String(node.code || node.shortcode || "");
-    const postUrl = shortcode ? "https://www.instagram.com/p/" + shortcode + "/" : "";
-
-    posts.push({
-      platform: "instagram",
-      content: text.slice(0, 500),
-      authorName,
-      likes,
-      reposts: 0,
-      comments,
-      views: views > 0 ? views : likes,
-      postUrl,
-    });
-  }
-  if (skipped > 0) console.log("Instagram: 过滤掉 " + skipped + " 条非日语内容");
-  if (skippedOld > 0) console.log("Instagram: 过滤掉 " + skippedOld + " 条超过14天的帖子");
-  return posts;
 }
