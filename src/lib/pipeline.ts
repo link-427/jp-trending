@@ -236,34 +236,31 @@ async function upsertToDatabase(items: FinalItem[], addLog: (msg: string) => voi
     }
   }
 
-  // 5. 批量插入新话题（1 次查询）
-  if (newItems.length > 0) {
-    const newRows = newItems.map(item => ({
-      title_ja: item.titleJa,
-      title_zh: item.titleZh,
-      category: item.category,
-      heat_score: item.hotScoreResult.totalScore,
-      heat_tag: item.heatTag,
-      sources: item.sources,
-      summary_zh: item.summaryZh,
-      rank_overall: item.rankOverall,
-      rank_category: item.rankCategory,
-      score_breakdown: item.hotScoreResult.breakdown,
-      first_seen_at: item.firstSeenAt.toISOString(),
-      updated_at: now,
-    }));
-
+  // 5. 逐条插入新话题（避免单条失败导致整批丢失）
+  for (const item of newItems) {
     const { data: inserted, error } = await supabase
       .from("trending_topics")
-      .insert(newRows)
-      .select("id, title_zh");
+      .insert({
+        title_ja: item.titleJa,
+        title_zh: item.titleZh,
+        category: item.category,
+        heat_score: item.hotScoreResult.totalScore,
+        heat_tag: item.heatTag,
+        sources: item.sources,
+        summary_zh: item.summaryZh,
+        rank_overall: item.rankOverall,
+        rank_category: item.rankCategory,
+        score_breakdown: item.hotScoreResult.breakdown,
+        first_seen_at: item.firstSeenAt.toISOString(),
+        updated_at: now,
+      })
+      .select("id, title_zh")
+      .single();
 
     if (error) {
-      addLog("批量插入新话题失败: " + error.message);
+      addLog("插入话题失败 #" + item.rankOverall + " [" + item.titleZh.slice(0, 20) + "]: " + error.message);
     } else if (inserted) {
-      for (const row of inserted) {
-        topicIdMap.set(row.title_zh, row.id);
-      }
+      topicIdMap.set(inserted.title_zh, inserted.id);
     }
   }
 
