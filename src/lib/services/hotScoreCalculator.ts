@@ -2,8 +2,8 @@ import { HOT_SCORE_CONFIG } from "../config/hotScoreConfig";
 import { RawPost } from "../fetchers/types";
 import type { InteractionHistory, ScoreBreakdown } from "@/types";
 
-// 热度计算器
-// 公式：热度 = (基础互动×30% + 增长速度×30% + 时效性×25% + 跨平台×15%) × 异常系数 × 平台权重
+// PRD 热度算法
+// 热度 = (互动总量×40% + 增长速度×30% + 跨平台程度×20% + 内容质量×10%) × 异常系数
 
 const cfg = HOT_SCORE_CONFIG;
 
@@ -16,185 +16,142 @@ export interface HotScoreResult {
 export function calculateHotScore(
   posts: RawPost[],
   platforms: string[],
-  firstSeenAt: Date,
   history: InteractionHistory[],
 ): HotScoreResult {
-  const baseInteraction = calculateBaseInteraction(posts, platforms);
-  const growth = calculateGrowth(history);
-  const timeliness = calculateTimeliness(firstSeenAt);
-  const crossPlatform = calculateCrossPlatform(platforms);
+  const interaction = calcInteraction(posts);
+  const growth = calcGrowth(posts, history);
+  const crossPlatform = calcCrossPlatform(platforms);
+  const contentQuality = calcContentQuality(posts);
   const anomalyCoefficient = detectAnomalies(posts);
-  const platformWeight = getPlatformWeight(platforms);
 
   const rawScore =
-    baseInteraction * cfg.weights.baseInteraction +
+    interaction * cfg.weights.interaction +
     growth * cfg.weights.growth +
-    timeliness * cfg.weights.timeliness +
-    crossPlatform * cfg.weights.crossPlatform;
+    crossPlatform * cfg.weights.crossPlatform +
+    contentQuality * cfg.weights.contentQuality;
 
-  const totalScore = Math.round(rawScore * anomalyCoefficient * platformWeight * 100) / 100;
+  const totalScore = Math.round(rawScore * anomalyCoefficient * 100) / 100;
 
   return {
     totalScore,
     breakdown: {
-      baseInteraction: Math.round(baseInteraction * 100) / 100,
+      interaction: Math.round(interaction * 100) / 100,
       growth: Math.round(growth * 100) / 100,
-      timeliness: Math.round(timeliness * 100) / 100,
       crossPlatform: Math.round(crossPlatform * 100) / 100,
+      contentQuality: Math.round(contentQuality * 100) / 100,
       anomalyCoefficient: Math.round(anomalyCoefficient * 1000) / 1000,
-      platformWeight: Math.round(platformWeight * 1000) / 1000,
     },
   };
 }
 
-// 1. 基础互动分（0-100）
-// 加权互动量 = (likes×1.0 + shares×2.5 + comments×1.8 + views×0.01) × 平台权重
-// 基础互动分 = min(100, log10(加权互动量 + 1) × 20)
-function calculateBaseInteraction(posts: RawPost[], platforms: string[]): number {
-  const avgPlatformWeight = getPlatformWeight(platforms);
-  let totalWeighted = 0;
-
-  for (const post of posts) {
-    const w = cfg.interactionWeights;
-    const weighted =
-      post.likes * w.like +
-      post.reposts * w.share +
-      post.comments * w.comment +
-      post.views * w.view;
-    totalWeighted += weighted;
+// 1. 互动总量分（0-100）
+// 直接累加所有帖子的点赞+转发+评论，log 归一化
+function calcInteraction(posts: RawPost[]): number {
+  let total = 0;
+  for (const p of posts) {
+    total += p.likes + p.reposts + p.comments;
   }
-
-  totalWeighted *= avgPlatformWeight;
-  return Math.min(100, Math.log10(totalWeighted + 1) * 20);
+  // log10 归一化：1万互动≈80分，10万≈100分
+  return Math.min(100, Math.log10(total + 1) * 20);
 }
 
 // 2. 增长速度分（0-100）
-// 从 interaction_history 计算多个时间段的增长率
-// 增长速度分 = (min(rate_1h,10)×0.4 + min(rate_3h,5)×0.3 + min(rate_6h,3)×0.2 + min(rate_24h,2)×0.1) × 10
-function calculateGrowth(history: InteractionHistory[]): number {
-  if (history.length < 2) {
-    // 冷启动：没有历史数据，给较低分，避免新话题仅靠冷启动就碾压有数据的话题
-    return 30;
+// 对比上一次记录的互动量，计算增长倍率
+function calcGrowth(posts: RawPost[], history: InteractionHistory[]): number {
+  // 当前互动总量
+  let currentTotal = 0;
+  for (const p of posts) {
+    currentTotal += p.likes + p.reposts + p.comments;
   }
 
-  const now = new Date();
+  // 没有历史记录 = 新话题，给中性分
+  if (history.length === 0) {
+    return 50;
+  }
+
+  // 取最近一条历史记录
   const sorted = [...history].sort(
     (a, b) => new Date(b.recorded_at).getTime() - new Date(a.recorded_at).getTime()
   );
-
-  // 最新一条记录的总互动量
   const latest = sorted[0];
-  const latestTotal = latest.likes + latest.shares + latest.comments + latest.views;
+  const pastTotal = latest.likes + latest.shares + latest.comments;
 
-  // 计算各时间段增长率
-  const rate1h = getGrowthRate(sorted, now, 1, latestTotal);
-  const rate3h = getGrowthRate(sorted, now, 3, latestTotal);
-  const rate6h = getGrowthRate(sorted, now, 6, latestTotal);
-  const rate24h = getGrowthRate(sorted, now, 24, latestTotal);
+  if (pastTotal === 0) {
+    return currentTotal > 0 ? 80 : 0;
+  }
 
-  const caps = cfg.growthRateCaps;
-  const tw = cfg.growthTimeWeights;
+  // 增长倍率 = 当前 / 历史
+  const growthRate = currentTotal / pastTotal;
 
-  const score =
-    (Math.min(rate1h, caps["1h"]) * tw["1h"] +
-     Math.min(rate3h, caps["3h"]) * tw["3h"] +
-     Math.min(rate6h, caps["6h"]) * tw["6h"] +
-     Math.min(rate24h, caps["24h"]) * tw["24h"]) * 10;
-
-  return Math.min(100, Math.max(0, score));
+  // 归一化：1倍=30分（持平），2倍=60分，5倍=90分，10倍=100分
+  if (growthRate <= 1) {
+    return Math.max(0, growthRate * 30);
+  }
+  return Math.min(100, 30 + Math.log10(growthRate) * 60);
 }
 
-// 找到距离 now 最接近 hoursAgo 的历史记录，计算增长率
-function getGrowthRate(
-  sorted: InteractionHistory[],
-  now: Date,
-  hoursAgo: number,
-  latestTotal: number,
-): number {
-  const targetTime = now.getTime() - hoursAgo * 3600 * 1000;
+// 3. 跨平台程度分（0-100）
+// 简单直接：1个平台=25分，2个=50分，3个=75分，4个=100分
+function calcCrossPlatform(platforms: string[]): number {
+  const unique = new Set(platforms);
+  return Math.min(100, unique.size * 25);
+}
 
-  // 找最接近目标时间的记录
-  let closest: InteractionHistory | null = null;
-  let closestDiff = Infinity;
+// 4. 内容质量分（0-100）
+// 有权威媒体 +50，有大V（高粉丝）+50
+function calcContentQuality(posts: RawPost[]): number {
+  let score = 0;
+  const thresholds = cfg.contentQuality;
 
-  for (const record of sorted) {
-    const diff = Math.abs(new Date(record.recorded_at).getTime() - targetTime);
-    if (diff < closestDiff) {
-      closestDiff = diff;
-      closest = record;
+  let hasHighFollower = false;
+  let hasAuthority = false;
+
+  for (const p of posts) {
+    // 大V 检测
+    if (p.followers && p.followers >= thresholds.highFollowerThreshold) {
+      hasHighFollower = true;
     }
+    // 权威媒体检测（在作者名或内容中匹配关键词）
+    const text = (p.authorName || "") + " " + p.content;
+    for (const keyword of thresholds.authorityKeywords) {
+      if (text.includes(keyword)) {
+        hasAuthority = true;
+        break;
+      }
+    }
+    if (hasHighFollower && hasAuthority) break;
   }
 
-  // 如果最接近的记录和目标时间差距超过时间段的一半，视为无数据
-  if (!closest || closestDiff > hoursAgo * 3600 * 1000 * 0.5) {
-    return 1; // 无数据，给中性增长率
-  }
+  if (hasAuthority) score += 50;
+  if (hasHighFollower) score += 50;
 
-  const pastTotal = closest.likes + closest.shares + closest.comments + closest.views;
-  if (pastTotal === 0) return latestTotal > 0 ? 5 : 0; // 从 0 增长，给较高增长率
+  // 补充：帖子数量多也说明质量高（多条相关内容）
+  if (posts.length >= 5) score = Math.max(score, 30);
+  else if (posts.length >= 3) score = Math.max(score, 20);
 
-  return latestTotal / pastTotal;
+  return Math.min(100, score);
 }
 
-// 3. 时效性分（0-100）
-// 公式：100 × e^(-lambda × t)，t 为距离首次出现的小时数
-function calculateTimeliness(firstSeenAt: Date): number {
-  const now = new Date();
-  const hours = (now.getTime() - firstSeenAt.getTime()) / (3600 * 1000);
-  if (hours < 0) return 100; // 时间异常，给满分
-  return 100 * Math.exp(-cfg.timeliness.lambda * hours);
-}
-
-// 4. 跨平台分（0-100）
-// 公式：(出现平台数/4 × 60%) + (主流平台覆盖度 × 40%)
-function calculateCrossPlatform(platforms: string[]): number {
-  const uniquePlatforms = new Set(platforms);
-  const platformCoverage = (uniquePlatforms.size / 4) * 100;
-
-  // 主流平台覆盖度
-  const mainstreamScore =
-    (uniquePlatforms.has("x") ? 30 : 0) +
-    (uniquePlatforms.has("yahoo") ? 25 : 0) +
-    (uniquePlatforms.has("instagram") ? 15 : 0) +
-    (uniquePlatforms.has("tiktok") ? 10 : 0);
-
-  // 加权：平台数量占 60%，主流覆盖度占 40%（主流满分 80，归一化到 100）
-  return platformCoverage * 0.6 + (mainstreamScore / 80) * 100 * 0.4;
-}
-
-// 5. 异常过滤系数（0-1，1 为正常）
+// 异常过滤系数（0-1，1 为正常）
 function detectAnomalies(posts: RawPost[]): number {
   let coefficient = 1.0;
   const thresholds = cfg.anomalyThresholds;
 
-  // 计算总互动量
   let totalLikes = 0;
   let totalComments = 0;
-  let totalFollowers = 0;
-  let followerCount = 0;
   const contentSet = new Set<string>();
   let allContent = "";
 
   for (const post of posts) {
     totalLikes += post.likes;
     totalComments += post.comments;
-    if (post.followers && post.followers > 0) {
-      totalFollowers += post.followers;
-      followerCount++;
-    }
-    const shortContent = post.content.slice(0, 50);
-    contentSet.add(shortContent);
+    contentSet.add(post.content.slice(0, 50));
     allContent += post.content;
   }
 
   // 点赞/评论比异常
   if (totalComments > 0 && totalLikes / totalComments > thresholds.likeCommentRatio) {
     coefficient *= 0.5;
-  }
-
-  // 账号质量低（平均粉丝数过低）
-  if (followerCount > 0 && totalFollowers / followerCount < thresholds.minAvgFollowers) {
-    coefficient *= 0.6;
   }
 
   // 内容重复率异常
@@ -214,16 +171,6 @@ function detectAnomalies(posts: RawPost[]): number {
   }
 
   return coefficient;
-}
-
-// 综合平台权重（取所有来源平台的平均权重）
-function getPlatformWeight(platforms: string[]): number {
-  if (platforms.length === 0) return 1.0;
-  let total = 0;
-  for (const p of platforms) {
-    total += cfg.platformWeights[p] || 1.0;
-  }
-  return total / platforms.length;
 }
 
 // 计算帖子的总互动量（用于记录到 interaction_history）

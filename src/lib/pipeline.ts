@@ -166,7 +166,6 @@ async function scoreTopics(
     const scoreResult = calculateHotScore(
       topic.relatedPosts,
       topic.sources,
-      firstSeenAt,
       history,
     );
 
