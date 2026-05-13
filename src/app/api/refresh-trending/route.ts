@@ -25,7 +25,8 @@ export async function POST() {
       success: result.success,
       data: result.success
         ? "刷新完成，共 " + result.count + " 条热点，耗时 " + ((result.duration || 0) / 1000).toFixed(1) + "s"
-        : "刷新失败，请查看日志",
+        : "刷新失败: " + (result.error || "未获取到数据"),
+      error: result.success ? undefined : result.error,
     });
   } catch (error) {
     console.error("手动刷新失败:", error);

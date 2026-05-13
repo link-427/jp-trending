@@ -31,6 +31,10 @@ export default function RefreshButton({ onRefreshComplete }: RefreshButtonProps)
         throw new Error(data.error || "刷新失败");
       }
 
+      if (!data.success) {
+        throw new Error(data.data || data.error || "刷新失败");
+      }
+
       // 刷新成功，通知父组件重新加载数据
       onRefreshComplete?.();
 

@@ -41,7 +41,7 @@ export async function runPipeline() {
 
   if (rawPosts.length === 0) {
     addLog("没有抓取到任何帖子，流水线结束");
-    return { success: false, log, duration: Date.now() - startTime };
+    return { success: false, log, duration: Date.now() - startTime, error: "所有平台均未返回数据" };
   }
 
   // 统计
@@ -106,12 +106,17 @@ export async function runPipeline() {
 
   // 第 5 步：写入数据库（upsert 模式）
   addLog("--- 第 5 步：写入数据库（upsert 模式）---");
-  await upsertToDatabase(finalItems, addLog);
+  const dbResult = await upsertToDatabase(finalItems, addLog);
   addLog("数据库写入完成");
 
   const duration = Date.now() - startTime;
+  if (dbResult.written === 0) {
+    addLog("警告：数据库写入 0 条，可能是连接或权限问题");
+    addLog("===== 流水线失败，耗时 " + (duration / 1000).toFixed(1) + "s =====");
+    return { success: false, log, count: 0, duration, error: "数据库写入失败: " + (dbResult.lastError || "未知错误") };
+  }
   addLog("===== 流水线完成，耗时 " + (duration / 1000).toFixed(1) + "s =====");
-  return { success: true, log, count: finalItems.length, duration };
+  return { success: true, log, count: dbResult.written, duration };
 }
 
 function getHeatTag(rank: number): HeatTag {
@@ -186,8 +191,9 @@ async function scoreTopics(
 }
 
 // 批量写入数据库（优化：减少串行查询次数）
-async function upsertToDatabase(items: FinalItem[], addLog: (msg: string) => void) {
+async function upsertToDatabase(items: FinalItem[], addLog: (msg: string) => void): Promise<{ written: number; lastError: string }> {
   const now = new Date().toISOString();
+  let lastError = "";
 
   // 1. 清除所有当前排名
   const { error: clearErr } = await supabase
@@ -196,6 +202,7 @@ async function upsertToDatabase(items: FinalItem[], addLog: (msg: string) => voi
     .not("rank_overall", "is", null);
   if (clearErr) {
     addLog("清除旧排名失败: " + clearErr.message);
+    lastError = clearErr.message;
   }
 
   // 2. 分离已有话题和新话题
@@ -229,6 +236,7 @@ async function upsertToDatabase(items: FinalItem[], addLog: (msg: string) => voi
 
     if (error) {
       addLog("更新话题失败 #" + item.rankOverall + " [" + item.titleZh + "]: " + error.message);
+      lastError = error.message;
     } else {
       topicIdMap.set(item.titleZh, item.existingId!);
     }
@@ -257,6 +265,7 @@ async function upsertToDatabase(items: FinalItem[], addLog: (msg: string) => voi
 
     if (error) {
       addLog("插入话题失败 #" + item.rankOverall + " [" + item.titleZh.slice(0, 20) + "]: " + error.message);
+      lastError = error.message;
     } else if (inserted) {
       topicIdMap.set(inserted.title_zh, inserted.id);
     }
@@ -328,4 +337,5 @@ async function upsertToDatabase(items: FinalItem[], addLog: (msg: string) => voi
   }
 
   addLog("数据库写入：更新 " + existingItems.length + " 个, 新增 " + (topicIdMap.size - existingItems.length) + " 个");
+  return { written: topicIdMap.size, lastError };
 }
