@@ -39,10 +39,10 @@ export async function fetchAllPlatforms(): Promise<FetchResult> {
   }
   logs.push("已配置的平台：" + configured.map((f) => f.name).join(", "));
 
-  // 并行抓取，每个 fetcher 最多 12 秒
+  // 并行抓取，每个 fetcher 最多 25 秒
   const results = await Promise.allSettled(
     configured.map(async (f) => {
-      const posts = await withTimeout(f.fetch(), 12000, f.name);
+      const posts = await withTimeout(f.fetch(), 25000, f.name);
       return { name: f.name, posts };
     })
   );

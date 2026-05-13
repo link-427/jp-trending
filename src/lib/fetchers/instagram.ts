@@ -23,9 +23,12 @@ export const instagramFetcher: PlatformFetcher = {
       console.log("Instagram: 搜索日本热门标签...");
       const allPosts: RawPost[] = [];
 
-      for (const hashtag of HASHTAGS) {
-        const posts = await fetchHashtagPosts(apiKey, hashtag);
-        allPosts.push(...posts);
+      // 并行获取所有标签下的帖子
+      const results = await Promise.allSettled(
+        HASHTAGS.map((hashtag) => fetchHashtagPosts(apiKey, hashtag))
+      );
+      for (const result of results) {
+        if (result.status === "fulfilled") allPosts.push(...result.value);
       }
 
       console.log("Instagram: 共获取 " + allPosts.length + " 条帖子");

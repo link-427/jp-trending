@@ -35,9 +35,12 @@ export const tiktokFetcher: PlatformFetcher = {
       console.log("TikTok: 获取 " + topChallenges.length + " 个标签下的帖子...");
       const allPosts: RawPost[] = [];
 
-      for (const challenge of topChallenges) {
-        const posts = await fetchChallengePosts(apiKey, challenge.id, challenge.name);
-        allPosts.push(...posts);
+      // 并行获取所有标签下的帖子
+      const postResults = await Promise.allSettled(
+        topChallenges.map((c) => fetchChallengePosts(apiKey, c.id, c.name))
+      );
+      for (const result of postResults) {
+        if (result.status === "fulfilled") allPosts.push(...result.value);
       }
 
       console.log("TikTok: 共获取 " + allPosts.length + " 条帖子");
@@ -55,36 +58,35 @@ interface ChallengeInfo {
   viewCount: number;
 }
 
-// 搜索日本相关的热门标签
+// 搜索日本相关的热门标签（并行请求所有关键词）
 async function searchChallenges(apiKey: string): Promise<ChallengeInfo[]> {
   const seen = new Set<string>();
   const results: ChallengeInfo[] = [];
 
-  for (const keyword of SEARCH_KEYWORDS) {
-    try {
+  const searches = await Promise.allSettled(
+    SEARCH_KEYWORDS.map(async (keyword) => {
       const url = "https://" + HOST + "/challenge/search?keywords=" + encodeURIComponent(keyword) + "&count=10";
       const res = await fetch(url, {
         headers: { "X-RapidAPI-Key": apiKey, "X-RapidAPI-Host": HOST },
       });
-
-      if (!res.ok) continue;
+      if (!res.ok) return [];
       const data = await res.json();
-
       const list = data?.data?.challenge_list;
-      if (!Array.isArray(list)) continue;
+      return Array.isArray(list) ? list : [];
+    })
+  );
 
-      for (const c of list) {
-        const id = String(c.id || "");
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        results.push({
-          id,
-          name: String(c.cha_name || ""),
-          viewCount: Number(c.view_count || 0),
-        });
-      }
-    } catch {
-      console.log("TikTok: 搜索标签 [" + keyword + "] 失败");
+  for (const result of searches) {
+    if (result.status !== "fulfilled") continue;
+    for (const c of result.value) {
+      const id = String(c.id || "");
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      results.push({
+        id,
+        name: String(c.cha_name || ""),
+        viewCount: Number(c.view_count || 0),
+      });
     }
   }
 
